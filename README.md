@@ -10,12 +10,19 @@ Creates a Razorpay order from booking metadata.
 Request body:
 ```json
 {
-  "amount": 499,
-  "bookingId": "booking_uuid",
-  "mentorId": "mentor_uuid",
-  "sessionType": "one_to_one"
+  "amount": 1499,
+  "bookingId": "b610df01-0f43-4aaf",
+  "actualBookingId": "b610df01-0f43-4aaf-8c07-5c19d98450f1",
+  "mentorId": "9c16e263-45aa-4f93-88eb-dd62e065618f",
+  "sessionType": "oneOnOneSession"
 }
 ```
+
+Notes:
+- `actualBookingId` is preferred for canonical reconciliation.
+- `canonicalBookingId = actualBookingId || bookingId`.
+- At least one booking identifier is required.
+- Receipt is generated as a safe string (`<= 40` chars) to satisfy Razorpay constraints.
 
 Response:
 ```json
@@ -39,9 +46,12 @@ Request body:
   "razorpay_order_id": "order_...",
   "razorpay_payment_id": "pay_...",
   "razorpay_signature": "...",
-  "bookingId": "booking_uuid"
+  "bookingId": "b610df01-0f43-4aaf",
+  "actualBookingId": "b610df01-0f43-4aaf-8c07-5c19d98450f1"
 }
 ```
+
+Verify response includes `canonicalBookingId` for easier debugging.
 
 ### `POST /api/payment/webhook`
 Authoritative webhook endpoint for payment state sync.
@@ -56,11 +66,11 @@ Handled events:
 Open gateway with query params:
 
 ```text
-https://payment-gateway-psp4.onrender.com/?amount=<mentor_price>&bookingId=<booking_id>&mentorId=<mentor_id>&sessionType=<service_type>
+https://payment-gateway-psp4.onrender.com/?amount=<mentor_price>&bookingId=<short_booking_id>&actualBookingId=<full_booking_uuid>&mentorId=<mentor_id>&sessionType=<service_type>
 ```
 
 The hosted page:
-- Validates `amount > 0` and `bookingId`.
+- Validates `amount > 0` and at least one booking ID (`actualBookingId || bookingId`).
 - Creates order via `/api/payment/create-order`.
 - Opens Razorpay checkout.
 - Calls `/api/payment/verify` on success.
@@ -120,14 +130,21 @@ Create order:
 ```bash
 curl -X POST http://localhost:3000/api/payment/create-order \
   -H "Content-Type: application/json" \
-  -d '{"amount":499,"bookingId":"booking_uuid","mentorId":"mentor_uuid","sessionType":"one_to_one"}'
+  -d '{"amount":1499,"bookingId":"b610df01-0f43-4aaf","actualBookingId":"b610df01-0f43-4aaf-8c07-5c19d98450f1","mentorId":"9c16e263-45aa-4f93-88eb-dd62e065618f","sessionType":"oneOnOneSession"}'
+```
+
+Create order with short booking ID only (backward compatible):
+```bash
+curl -X POST http://localhost:3000/api/payment/create-order \
+  -H "Content-Type: application/json" \
+  -d '{"amount":1499,"bookingId":"b610df01-0f43-4aaf","mentorId":"9c16e263-45aa-4f93-88eb-dd62e065618f","sessionType":"oneOnOneSession"}'
 ```
 
 Verify payment:
 ```bash
 curl -X POST http://localhost:3000/api/payment/verify \
   -H "Content-Type: application/json" \
-  -d '{"razorpay_order_id":"order_x","razorpay_payment_id":"pay_x","razorpay_signature":"sig_x","bookingId":"booking_uuid"}'
+  -d '{"razorpay_order_id":"order_x","razorpay_payment_id":"pay_x","razorpay_signature":"sig_x","bookingId":"b610df01-0f43-4aaf","actualBookingId":"b610df01-0f43-4aaf-8c07-5c19d98450f1"}'
 ```
 
 Webhook (signature header required):
@@ -137,3 +154,10 @@ curl -X POST http://localhost:3000/api/payment/webhook \
   -H "x-razorpay-signature: <computed_signature>" \
   -d '{"event":"payment.captured","payload":{}}'
 ```
+
+Sanity checks:
+```bash
+npm run sanity:payment
+```
+
+This validates canonical booking resolution and ensures generated receipt length always remains `<= 40`.

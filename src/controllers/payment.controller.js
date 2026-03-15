@@ -8,6 +8,11 @@ const {
 } = require("../services/booking.service")
 const { sendError, sendSuccess } = require("../utils/response")
 const { logInfo, logError } = require("../utils/logger")
+const {
+  getCanonicalBookingId,
+  parseAmountInPaise,
+  buildSafeReceipt
+} = require("../utils/payment")
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -37,35 +42,34 @@ function getBookingIdFromWebhook(payload) {
   )
 }
 
-function parseAmountInPaise(amountInRupees) {
-  const amount = Number(amountInRupees)
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null
-  }
-
-  return Math.round(amount * 100)
-}
-
 async function createOrder(req, res) {
   const requestId = req.requestId
   try {
-    const { amount, bookingId, mentorId, sessionType } = req.body || {}
+    const { amount, bookingId, actualBookingId, mentorId, sessionType } = req.body || {}
     const paise = parseAmountInPaise(amount)
+    const canonicalBookingId = getCanonicalBookingId({ bookingId, actualBookingId })
 
     if (!paise) {
-      return sendError(res, 400, "INVALID_AMOUNT", "amount must be a number greater than 0")
+      return sendError(res, 400, "INVALID_AMOUNT", "amount must be a number greater than 0", {
+        amount
+      })
     }
 
-    if (!bookingId) {
-      return sendError(res, 400, "MISSING_BOOKING_ID", "bookingId is required")
+    if (!canonicalBookingId) {
+      return sendError(
+        res,
+        400,
+        "MISSING_BOOKING_IDENTIFIER",
+        "bookingId or actualBookingId is required"
+      )
     }
 
     const options = {
       amount: paise,
       currency: "INR",
-      receipt: `booking_${String(bookingId).slice(0, 30)}_${Date.now()}`,
+      receipt: buildSafeReceipt(canonicalBookingId),
       notes: {
-        booking_id: String(bookingId),
+        booking_id: String(canonicalBookingId),
         mentor_id: mentorId ? String(mentorId) : "",
         session_type: sessionType ? String(sessionType) : "",
         source: "matepeak"
@@ -76,23 +80,26 @@ async function createOrder(req, res) {
 
     if (isBookingSyncConfigured()) {
       await updateBookingPaymentStatus({
-        bookingId: String(bookingId),
+        bookingId: String(canonicalBookingId),
         paymentStatus: "pending",
         razorpayOrderId: order.id
       })
     } else {
       logInfo("booking_sync_skipped_missing_config", {
         requestId,
-        bookingId,
+        bookingId: canonicalBookingId,
         orderId: order.id
       })
     }
 
     logInfo("order_created", {
       requestId,
-      bookingId,
+      bookingId: canonicalBookingId,
+      providedBookingId: bookingId || null,
+      providedActualBookingId: actualBookingId || null,
       orderId: order.id,
-      amountPaise: paise
+      amountPaise: paise,
+      receiptLength: options.receipt.length
     })
 
     return sendSuccess(res, 200, {
@@ -120,7 +127,8 @@ async function verifyPayment(req, res) {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      bookingId
+      bookingId,
+      actualBookingId
     } = req.body || {}
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -139,7 +147,7 @@ async function verifyPayment(req, res) {
 
     const isValid = generatedSignature === razorpay_signature
 
-    let resolvedBookingId = bookingId ? String(bookingId) : null
+    let resolvedBookingId = getCanonicalBookingId({ bookingId, actualBookingId })
     if (!resolvedBookingId) {
       const order = await razorpay.orders.fetch(razorpay_order_id)
       resolvedBookingId = order?.notes?.booking_id || null
@@ -196,13 +204,16 @@ async function verifyPayment(req, res) {
     logInfo("payment_verified", {
       requestId,
       bookingId: resolvedBookingId,
+      providedBookingId: bookingId || null,
+      providedActualBookingId: actualBookingId || null,
       orderId: razorpay_order_id,
       paymentId: razorpay_payment_id
     })
 
     return sendSuccess(res, 200, {
       verified: true,
-      bookingId: resolvedBookingId
+      bookingId: resolvedBookingId,
+      canonicalBookingId: resolvedBookingId
     })
   } catch (error) {
     if (error instanceof BookingSyncError) {
@@ -276,21 +287,24 @@ async function handleWebhook(req, res) {
       return sendSuccess(res, 200, { received: true, skipped: "booking_not_found" })
     }
 
+    let outcome = "ignored_event"
     if (event === "payment.captured" || event === "order.paid") {
-      await updateBookingPaymentStatus({
+      const result = await updateBookingPaymentStatus({
         bookingId: String(bookingId),
         paymentStatus: "paid",
         bookingStatus: "confirmed",
         razorpayOrderId: orderId,
         razorpayPaymentId: paymentId
       })
+      outcome = result.updated ? "marked_paid" : result.reason
     } else if (event === "payment.failed") {
-      await updateBookingPaymentStatus({
+      const result = await updateBookingPaymentStatus({
         bookingId: String(bookingId),
         paymentStatus: "failed",
         razorpayOrderId: orderId,
         razorpayPaymentId: paymentId
       })
+      outcome = result.updated ? "marked_failed" : result.reason
     }
 
     processedWebhookEvents.set(eventId, Date.now())
@@ -301,10 +315,11 @@ async function handleWebhook(req, res) {
       event,
       bookingId,
       orderId,
-      paymentId
+      paymentId,
+      outcome
     })
 
-    return sendSuccess(res, 200, { received: true, eventId, event })
+    return sendSuccess(res, 200, { received: true, eventId, event, outcome })
   } catch (error) {
     if (error instanceof BookingSyncError) {
       return sendError(res, error.statusCode, error.code, error.message)

@@ -136,12 +136,14 @@
         const params = new URLSearchParams(window.location.search)
         const amountParam = params.get("amount")
         const bookingId = params.get("bookingId")
+        const actualBookingId = params.get("actualBookingId")
         const mentorId = params.get("mentorId")
         const sessionType = params.get("sessionType")
+        const canonicalBookingId = actualBookingId || bookingId
 
         const amount = Number(amountParam)
         const isAmountValid = Number.isFinite(amount) && amount > 0
-        const isBookingValid = Boolean(bookingId)
+        const isBookingValid = Boolean(canonicalBookingId)
 
         function setMessage(text, kind) {
             messageEl.textContent = text
@@ -156,8 +158,8 @@
             }
 
             const url = new URL("/booking-success", baseUrl)
-            if (bookingId) {
-                url.searchParams.set("bookingId", bookingId)
+            if (canonicalBookingId) {
+                url.searchParams.set("bookingId", canonicalBookingId)
             }
             url.searchParams.set("payment", paymentStatus)
             window.location.href = url.toString()
@@ -166,7 +168,9 @@
         function renderSummary() {
             const amountText = isAmountValid ? `INR ${amount.toFixed(2)}` : "Invalid"
             summaryEl.innerHTML = [
-                `<strong>Booking ID:</strong> ${bookingId || "Missing"}<br>`,
+                `<strong>Booking ID:</strong> ${canonicalBookingId || "Missing"}<br>`,
+                `<strong>Source Booking ID:</strong> ${bookingId || "N/A"}<br>`,
+                `<strong>Actual Booking ID:</strong> ${actualBookingId || "N/A"}<br>`,
                 `<strong>Mentor ID:</strong> ${mentorId || "N/A"}<br>`,
                 `<strong>Session Type:</strong> ${sessionType || "N/A"}<br>`,
                 `<strong>Amount:</strong> ${amountText}`
@@ -181,7 +185,8 @@
                     razorpay_order_id: paymentResponse.razorpay_order_id,
                     razorpay_payment_id: paymentResponse.razorpay_payment_id,
                     razorpay_signature: paymentResponse.razorpay_signature,
-                    bookingId
+                    bookingId,
+                    actualBookingId
                 })
             })
 
@@ -203,6 +208,7 @@
                     body: JSON.stringify({
                         amount,
                         bookingId,
+                        actualBookingId,
                         mentorId,
                         sessionType
                     })
@@ -210,7 +216,8 @@
 
                 const orderData = await createOrderResponse.json()
                 if (!createOrderResponse.ok || !orderData.success) {
-                    throw new Error(orderData?.error?.message || "Could not start payment")
+                    const details = orderData?.error?.details ? ` (${JSON.stringify(orderData.error.details)})` : ""
+                    throw new Error((orderData?.error?.message || "Could not start payment") + details)
                 }
 
                 const options = {
@@ -267,7 +274,7 @@
                 errors.push("Amount must be a number greater than 0")
             }
             if (!isBookingValid) {
-                errors.push("bookingId is required")
+                errors.push("bookingId or actualBookingId is required")
             }
             setMessage(errors.join(". "), "error")
         }

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Razorpay Payment</title>
+</head>
+<body style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif;">
+    <h1>Pay ₹1</h1>
+    <button id="pay-button" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">Pay with Razorpay</button>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+        document.getElementById('pay-button').onclick = async function(e) {
+            // Step 1: Create Order in Backend
+            const response = await fetch('/api/payment/create-order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                const order = data.order;
+
+                // Step 2: Open Razorpay Checkout
+                const options = {
+                    key: "<%= razorpayKey %>", 
+                    amount: order.amount,
+                    currency: order.currency,
+                    name: "Matepeak",
+                    description: "Test Transaction",
+                    order_id: order.id,
+                    handler: function (response) {
+                        alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
+                    },
+                    prefill: {
+                        name: "test",
+                        email: "test@example.com",
+                        contact: "9999999999"
+                    },
+                    theme: {
+                        color: "#3399cc"
+                    }
+                };
+                const rzp1 = new Razorpay(options);
+                rzp1.open();
+            } else {
+                alert("Failed to create order");
+            }
+        }
+    </script>
+</body>
+</html>

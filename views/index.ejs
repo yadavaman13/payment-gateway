@@ -3,50 +3,273 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Razorpay Payment</title>
+    <title>MatePeak Payment Gateway</title>
+    <style>
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #1d4ed8;
+            --danger: #b91c1c;
+            --success: #047857;
+            --border: #d1d5db;
+        }
+
+        body {
+            margin: 0;
+            background: radial-gradient(circle at top right, #e0ecff 0%, var(--bg) 40%);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 460px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 10px 30px rgba(31, 41, 55, 0.08);
+        }
+
+        .title {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .summary {
+            margin-top: 20px;
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            font-size: 14px;
+            line-height: 1.7;
+        }
+
+        .actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 12px 18px;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        #pay-button {
+            background: var(--primary);
+            color: white;
+            min-width: 180px;
+        }
+
+        #pay-button[disabled] {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #cancel-button {
+            background: #e5e7eb;
+            color: var(--text);
+        }
+
+        .message {
+            margin-top: 14px;
+            font-size: 14px;
+        }
+
+        .message.error {
+            color: var(--danger);
+        }
+
+        .message.success {
+            color: var(--success);
+        }
+    </style>
 </head>
-<body style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif;">
-    <h1>Pay ₹1</h1>
-    <button id="pay-button" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">Pay with Razorpay</button>
+<body>
+    <div class="card">
+        <h1 class="title">Complete your payment</h1>
+        <p class="subtitle">Secure payment powered by Razorpay.</p>
+
+        <div class="summary" id="summary"></div>
+
+        <div class="actions">
+            <button id="pay-button" type="button">Pay Now</button>
+            <button id="cancel-button" type="button">Cancel</button>
+        </div>
+
+        <div id="message" class="message"></div>
+    </div>
 
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <script>
-        document.getElementById('pay-button').onclick = async function(e) {
-            // Step 1: Create Order in Backend
-            const response = await fetch('/api/payment/create-order', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
-            const data = await response.json();
+        const gatewayConfig = {
+            razorpayKey: "<%= razorpayKey %>",
+            matepeakAppUrl: "<%= matepeakAppUrl %>"
+        }
 
-            if (data.success) {
-                const order = data.order;
+        const summaryEl = document.getElementById("summary")
+        const messageEl = document.getElementById("message")
+        const payButton = document.getElementById("pay-button")
+        const cancelButton = document.getElementById("cancel-button")
 
-                // Step 2: Open Razorpay Checkout
-                const options = {
-                    key: "<%= razorpayKey %>", 
-                    amount: order.amount,
-                    currency: order.currency,
-                    name: "Matepeak",
-                    description: "Test Transaction",
-                    order_id: order.id,
-                    handler: function (response) {
-                        alert("Payment successful! Payment ID: " + response.razorpay_payment_id);
-                    },
-                    prefill: {
-                        name: "test",
-                        email: "test@example.com",
-                        contact: "9999999999"
-                    },
-                    theme: {
-                        color: "#3399cc"
-                    }
-                };
-                const rzp1 = new Razorpay(options);
-                rzp1.open();
-            } else {
-                alert("Failed to create order");
+        const params = new URLSearchParams(window.location.search)
+        const amountParam = params.get("amount")
+        const bookingId = params.get("bookingId")
+        const mentorId = params.get("mentorId")
+        const sessionType = params.get("sessionType")
+
+        const amount = Number(amountParam)
+        const isAmountValid = Number.isFinite(amount) && amount > 0
+        const isBookingValid = Boolean(bookingId)
+
+        function setMessage(text, kind) {
+            messageEl.textContent = text
+            messageEl.className = `message ${kind || ""}`
+        }
+
+        function redirectToMatePeak(paymentStatus) {
+            const baseUrl = gatewayConfig.matepeakAppUrl || ""
+            if (!baseUrl) {
+                setMessage("Could not redirect automatically. Please return to MatePeak app.", "error")
+                return
             }
+
+            const url = new URL("/booking-success", baseUrl)
+            if (bookingId) {
+                url.searchParams.set("bookingId", bookingId)
+            }
+            url.searchParams.set("payment", paymentStatus)
+            window.location.href = url.toString()
+        }
+
+        function renderSummary() {
+            const amountText = isAmountValid ? `INR ${amount.toFixed(2)}` : "Invalid"
+            summaryEl.innerHTML = [
+                `<strong>Booking ID:</strong> ${bookingId || "Missing"}<br>`,
+                `<strong>Mentor ID:</strong> ${mentorId || "N/A"}<br>`,
+                `<strong>Session Type:</strong> ${sessionType || "N/A"}<br>`,
+                `<strong>Amount:</strong> ${amountText}`
+            ].join("")
+        }
+
+        async function verifyPaymentOnServer(paymentResponse) {
+            const verifyResponse = await fetch("/api/payment/verify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    razorpay_order_id: paymentResponse.razorpay_order_id,
+                    razorpay_payment_id: paymentResponse.razorpay_payment_id,
+                    razorpay_signature: paymentResponse.razorpay_signature,
+                    bookingId
+                })
+            })
+
+            const verifyData = await verifyResponse.json()
+            if (!verifyResponse.ok || !verifyData.success) {
+                throw new Error(verifyData?.error?.message || "Payment verification failed")
+            }
+            return verifyData
+        }
+
+        async function startPayment() {
+            payButton.disabled = true
+            setMessage("Creating your order...", "")
+
+            try {
+                const createOrderResponse = await fetch("/api/payment/create-order", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        amount,
+                        bookingId,
+                        mentorId,
+                        sessionType
+                    })
+                })
+
+                const orderData = await createOrderResponse.json()
+                if (!createOrderResponse.ok || !orderData.success) {
+                    throw new Error(orderData?.error?.message || "Could not start payment")
+                }
+
+                const options = {
+                    key: orderData.publicKey || gatewayConfig.razorpayKey,
+                    amount: orderData.order.amount,
+                    currency: orderData.order.currency,
+                    order_id: orderData.order.id,
+                    name: "MatePeak",
+                    description: "Mentor session booking",
+                    handler: async function(paymentResponse) {
+                        try {
+                            setMessage("Verifying payment...", "")
+                            await verifyPaymentOnServer(paymentResponse)
+                            setMessage("Payment successful. Redirecting...", "success")
+                            redirectToMatePeak("success")
+                        } catch (error) {
+                            setMessage(error.message || "Payment verification failed", "error")
+                            redirectToMatePeak("failed")
+                        }
+                    },
+                    modal: {
+                        ondismiss: function() {
+                            setMessage("Payment was cancelled.", "error")
+                            redirectToMatePeak("failed")
+                        }
+                    },
+                    theme: { color: "#1d4ed8" }
+                }
+
+                const checkout = new Razorpay(options)
+                checkout.on("payment.failed", function() {
+                    setMessage("Payment failed. Please try again.", "error")
+                    redirectToMatePeak("failed")
+                })
+                checkout.open()
+            } catch (error) {
+                setMessage(error.message || "Unable to initiate payment", "error")
+            } finally {
+                payButton.disabled = false
+            }
+        }
+
+        payButton.addEventListener("click", startPayment)
+        cancelButton.addEventListener("click", function() {
+            redirectToMatePeak("failed")
+        })
+
+        renderSummary()
+
+        if (!isAmountValid || !isBookingValid) {
+            payButton.disabled = true
+            const errors = []
+            if (!isAmountValid) {
+                errors.push("Amount must be a number greater than 0")
+            }
+            if (!isBookingValid) {
+                errors.push("bookingId is required")
+            }
+            setMessage(errors.join(". "), "error")
         }
     </script>
 </body>

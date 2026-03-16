@@ -18,6 +18,7 @@
     "express": "^5.2.1",
     "nodemon": "^3.1.14",
     "razorpay": "^2.9.6",
+    "resend": "^6.9.3",
     "supabase": "^2.78.1"
   }
 }

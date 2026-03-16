@@ -143,7 +143,7 @@
 
         const amount = Number(amountParam)
         const isAmountValid = Number.isFinite(amount) && amount > 0
-        const isBookingValid = Boolean(canonicalBookingId)
+        const isBookingValid = true
 
         function setMessage(text, kind) {
             messageEl.textContent = text
@@ -225,8 +225,13 @@
                     amount: orderData.order.amount,
                     currency: orderData.order.currency,
                     order_id: orderData.order.id,
-                    name: "MatePeak",
-                    description: "Mentor session booking",
+                    name: orderData.name || "MatePeak",
+                    description: orderData.description || "Mentor session booking",
+                    prefill: {
+                        name: orderData.name || "",
+                        email: orderData.email || "",
+                        contact: orderData.contact || ""
+                    },
                     handler: async function(paymentResponse) {
                         try {
                             setMessage("Verifying payment...", "")
@@ -272,9 +277,6 @@
             const errors = []
             if (!isAmountValid) {
                 errors.push("Amount must be a number greater than 0")
-            }
-            if (!isBookingValid) {
-                errors.push("bookingId or actualBookingId is required")
             }
             setMessage(errors.join(". "), "error")
         }

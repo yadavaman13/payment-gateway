@@ -14,10 +14,34 @@ const {
   buildSafeReceipt
 } = require("../utils/payment")
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-})
+const FIXED_CHECKOUT_PROFILE = {
+  name: "Itesh prajapati",
+  email: "iteshofficial@gmail.com",
+  contact: "8200854335"
+}
+
+function getRazorpayCredentials() {
+  const keyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_ID_KEY || "").trim()
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET_KEY || "").trim()
+
+  if (!keyId || !keySecret) {
+    throw new Error("Razorpay credentials are not configured")
+  }
+
+  return { keyId, keySecret }
+}
+
+function getRazorpayClient() {
+  const { keyId, keySecret } = getRazorpayCredentials()
+  return new Razorpay({
+    key_id: keyId,
+    key_secret: keySecret
+  })
+}
+
+function isGuestBookingId(bookingId) {
+  return String(bookingId || "").startsWith("guest_")
+}
 
 const processedWebhookEvents = new Map()
 const EVENT_TTL_MS = 60 * 60 * 1000
@@ -45,23 +69,21 @@ function getBookingIdFromWebhook(payload) {
 async function createOrder(req, res) {
   const requestId = req.requestId
   try {
-    const { amount, bookingId, actualBookingId, mentorId, sessionType } = req.body || {}
+    const razorpay = getRazorpayClient()
+    const { keyId } = getRazorpayCredentials()
+    const { amount, bookingId, actualBookingId, mentorId, sessionType, name, description } = req.body || {}
     const paise = parseAmountInPaise(amount)
-    const canonicalBookingId = getCanonicalBookingId({ bookingId, actualBookingId })
+    let canonicalBookingId = getCanonicalBookingId({ bookingId, actualBookingId })
+    const guestFlow = !canonicalBookingId
+
+    if (!canonicalBookingId) {
+      canonicalBookingId = `guest_${Date.now()}`
+    }
 
     if (!paise) {
       return sendError(res, 400, "INVALID_AMOUNT", "amount must be a number greater than 0", {
         amount
       })
-    }
-
-    if (!canonicalBookingId) {
-      return sendError(
-        res,
-        400,
-        "MISSING_BOOKING_IDENTIFIER",
-        "bookingId or actualBookingId is required"
-      )
     }
 
     const options = {
@@ -78,7 +100,7 @@ async function createOrder(req, res) {
 
     const order = await razorpay.orders.create(options)
 
-    if (isBookingSyncConfigured()) {
+    if (!guestFlow && isBookingSyncConfigured()) {
       await updateBookingPaymentStatus({
         bookingId: String(canonicalBookingId),
         paymentStatus: "pending",
@@ -104,7 +126,16 @@ async function createOrder(req, res) {
 
     return sendSuccess(res, 200, {
       order,
-      publicKey: process.env.RAZORPAY_KEY_ID
+      publicKey: keyId,
+      key_id: keyId,
+      order_id: order.id,
+      amount: paise,
+      product_name: name || "Mentorship Session",
+      description: description || "One-on-one call",
+      contact: FIXED_CHECKOUT_PROFILE.contact,
+      name: FIXED_CHECKOUT_PROFILE.name,
+      email: FIXED_CHECKOUT_PROFILE.email,
+      guestFlow
     })
   } catch (error) {
     if (error instanceof BookingSyncError) {
@@ -123,6 +154,8 @@ async function createOrder(req, res) {
 async function verifyPayment(req, res) {
   const requestId = req.requestId
   try {
+    const razorpay = getRazorpayClient()
+    const { keySecret } = getRazorpayCredentials()
     const {
       razorpay_order_id,
       razorpay_payment_id,
@@ -141,7 +174,7 @@ async function verifyPayment(req, res) {
     }
 
     const generatedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", keySecret)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest("hex")
 
@@ -158,12 +191,14 @@ async function verifyPayment(req, res) {
     }
 
     if (!isValid) {
-      await updateBookingPaymentStatus({
-        bookingId: resolvedBookingId,
-        paymentStatus: "failed",
-        razorpayOrderId: razorpay_order_id,
-        razorpayPaymentId: razorpay_payment_id
-      })
+      if (!isGuestBookingId(resolvedBookingId)) {
+        await updateBookingPaymentStatus({
+          bookingId: resolvedBookingId,
+          paymentStatus: "failed",
+          razorpayOrderId: razorpay_order_id,
+          razorpayPaymentId: razorpay_payment_id
+        })
+      }
 
       logInfo("payment_verify_invalid_signature", {
         requestId,
@@ -173,6 +208,14 @@ async function verifyPayment(req, res) {
       })
 
       return sendError(res, 400, "INVALID_SIGNATURE", "Invalid payment signature")
+    }
+
+    if (isGuestBookingId(resolvedBookingId)) {
+      return sendSuccess(res, 200, {
+        verified: true,
+        bookingId: resolvedBookingId,
+        guestFlow: true
+      })
     }
 
     const currentState = await getBookingPaymentState(resolvedBookingId)
@@ -231,6 +274,7 @@ async function verifyPayment(req, res) {
 async function handleWebhook(req, res) {
   const requestId = req.requestId
   try {
+    const razorpay = getRazorpayClient()
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET
     const signature = req.headers["x-razorpay-signature"]
     const eventId = req.headers["x-razorpay-event-id"] || crypto.randomUUID()
